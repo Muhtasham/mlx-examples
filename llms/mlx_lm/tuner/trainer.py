@@ -1,6 +1,6 @@
-import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -80,9 +80,9 @@ def iterate_batches(dataset, tokenizer, batch_size, max_seq_length, train=False)
             for j in range(batch_size):
                 truncated_length = min(lengths[j], max_seq_length)
                 batch_arr[j, :truncated_length] = batch[j][:truncated_length]
-                lengths[
-                    j
-                ] = truncated_length  # Update lengths to match truncated lengths
+                lengths[j] = (
+                    truncated_length  # Update lengths to match truncated lengths
+                )
             batch = mx.array(batch_arr)
 
             yield batch[:, :-1], batch[:, 1:], mx.array(lengths)
@@ -99,6 +99,7 @@ def evaluate(
     num_batches,
     max_seq_length=2048,
     loss: callable = default_loss,
+    iterate_batches: callable = iterate_batches,
 ):
     all_losses = []
     ntokens = 0
@@ -118,6 +119,17 @@ def evaluate(
     return np.sum(all_losses) / ntokens
 
 
+class TrainingCallback:
+
+    def on_train_loss_report(self, train_info: dict):
+        """Called to report training loss at specified intervals."""
+        pass
+
+    def on_val_loss_report(self, val_info: dict):
+        """Called to report validation loss at specified intervals or the beginning."""
+        pass
+
+
 def train(
     model,
     tokenizer,
@@ -126,13 +138,29 @@ def train(
     val_dataset,
     args: TrainingArgs = TrainingArgs(),
     loss: callable = default_loss,
+    iterate_batches: callable = iterate_batches,
+    training_callback: TrainingCallback = None,
 ):
+    print(f"Starting training..., iters: {args.iters}")
+
+    def checkpoints_path(adapter_file) -> str:
+        checkpoints_path = Path("checkpoints")
+        if Path(adapter_file).parent:
+            checkpoints_path = Path(adapter_file).parent / "checkpoints"
+
+        checkpoints_path.mkdir(parents=True, exist_ok=True)
+
+        return str(checkpoints_path)
+
+    # Create checkpoints directory if it does not exist
+    adapter_path = checkpoints_path(args.adapter_file)
+
     # Create value and grad function for loss
     loss_value_and_grad = nn.value_and_grad(model, loss)
 
     losses = []
     n_tokens = 0
-    print("Starting training..., iters:", args.iters)
+    trained_tokens = 0
     # Main training loop
     start = time.perf_counter()
     for it, batch in zip(
@@ -162,11 +190,29 @@ def train(
             train_loss = np.mean(losses)
 
             stop = time.perf_counter()
+            learning_rate = optimizer.learning_rate.item()
+            it_sec = args.steps_per_report / (stop - start)
+            tokens_sec = float(n_tokens) / (stop - start)
+            trained_tokens += n_tokens
             print(
                 f"Iter {it + 1}: Train loss {train_loss:.3f}, "
-                f"It/sec {args.steps_per_report / (stop - start):.3f}, "
-                f"Tokens/sec {float(n_tokens) / (stop - start):.3f}"
+                f"Learning Rate {learning_rate:.3e}, "
+                f"It/sec {it_sec:.3f}, "
+                f"Tokens/sec {tokens_sec:.3f}, "
+                f"Trained Tokens {trained_tokens}"
             )
+
+            if training_callback is not None:
+                train_info = {
+                    "iteration": it + 1,
+                    "train_loss": train_loss,
+                    "learning_rate": learning_rate,
+                    "iterations_per_second": it_sec,
+                    "tokens_per_second": tokens_sec,
+                    "trained_tokens": trained_tokens,
+                }
+                training_callback.on_train_loss_report(train_info)
+
             losses = []
             n_tokens = 0
             start = time.perf_counter()
@@ -182,24 +228,36 @@ def train(
                 batch_size=args.batch_size,
                 num_batches=args.val_batches,
                 max_seq_length=args.max_seq_length,
+                iterate_batches=iterate_batches,
             )
+            val_time = time.perf_counter() - stop
             print(
                 f"Iter {it + 1}: "
                 f"Val loss {val_loss:.3f}, "
-                f"Val took {(time.perf_counter() - stop):.3f}s"
+                f"Val took {val_time:.3f}s"
             )
+
+            if training_callback is not None:
+                val_info = {
+                    "iteration": it + 1,
+                    "val_loss": val_loss,
+                    "val_time": val_time,
+                }
+                training_callback.on_val_loss_report(val_info)
 
             start = time.perf_counter()
 
-            # Save adapter weights if needed
-            if (it + 1) % args.steps_per_save == 0:
-                save_adapter(model=model, adapter_file=args.adapter_file)
-                print(
-                    f"Iter {it + 1}: Saved adapter weights to {os.path.join(args.adapter_file)}."
-                )
+        # Save adapter weights if needed
+        if (it + 1) % args.steps_per_save == 0:
+            checkpoint_adapter_file = (
+                f"{adapter_path}/{it + 1}_{Path(args.adapter_file).name}"
+            )
+            save_adapter(model=model, adapter_file=checkpoint_adapter_file)
+            print(f"Iter {it + 1}: Saved adapter weights to {checkpoint_adapter_file}.")
+
     # save final adapter weights
     save_adapter(model=model, adapter_file=args.adapter_file)
-    print(f"Saved final adapter weights to {os.path.join(args.adapter_file)}.")
+    print(f"Saved final adapter weights to {args.adapter_file}.")
 
 
 def save_adapter(

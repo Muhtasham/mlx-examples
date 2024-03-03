@@ -5,10 +5,12 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .base import BaseModelArgs
+from .layers import RMSNorm
 
 
 @dataclass
 class ModelArgs(BaseModelArgs):
+    model_type: str
     hidden_size: int
     num_hidden_layers: int
     intermediate_size: int
@@ -18,7 +20,6 @@ class ModelArgs(BaseModelArgs):
     num_key_value_heads: int = None
     rope_theta: float = 10000
     rope_traditional: bool = False
-    model_type: str = None
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
 
     def __post_init__(self):
@@ -32,20 +33,6 @@ class ModelArgs(BaseModelArgs):
 
             if self.rope_scaling["type"] != "linear":
                 raise ValueError("rope_scaling 'type' currently only supports 'linear'")
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dims: int, eps: float = 1e-5):
-        super().__init__()
-        self.weight = mx.ones((dims,))
-        self.eps = eps
-
-    def _norm(self, x):
-        return x * mx.rsqrt(x.square().mean(-1, keepdims=True) + self.eps)
-
-    def __call__(self, x):
-        output = self._norm(x.astype(mx.float32)).astype(x.dtype)
-        return self.weight * output
 
 
 class Attention(nn.Module):
@@ -93,12 +80,9 @@ class Attention(nn.Module):
         keys = keys.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
         values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
-        def repeat(a):
-            a = mx.concatenate([mx.expand_dims(a, 2)] * self.repeats, axis=2)
-            return a.reshape([B, self.n_heads, L, -1])
-
         if self.repeats > 1:
-            keys, values = map(repeat, (keys, values))
+            keys = mx.repeat(keys, self.repeats, axis=1)
+            values = mx.repeat(values, self.repeats, axis=1)
 
         if cache is not None:
             key_cache, value_cache = cache
@@ -190,6 +174,7 @@ class LlamaModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+        self.model_type = args.model_type
         self.model = LlamaModel(args)
         self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
 
@@ -207,3 +192,7 @@ class Model(nn.Module):
         return {
             k: v for k, v in weights.items() if "self_attn.rotary_emb.inv_freq" not in k
         }
+
+    @property
+    def layers(self):
+        return self.model.layers

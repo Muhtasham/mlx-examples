@@ -5,10 +5,12 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .base import BaseModelArgs
+from .layers import RMSNorm
 
 
 @dataclass
 class ModelArgs(BaseModelArgs):
+    model_type: str
     hidden_size: int = 2048
     num_attention_heads: int = 16
     num_hidden_layers: int = 24
@@ -23,20 +25,6 @@ class ModelArgs(BaseModelArgs):
     def __post_init__(self):
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dims: int, eps: float = 1e-5):
-        super().__init__()
-        self.weight = mx.ones((dims,))
-        self.eps = eps
-
-    def _norm(self, x):
-        return x * mx.rsqrt(x.square().mean(-1, keepdims=True) + self.eps)
-
-    def __call__(self, x):
-        output = self._norm(x.astype(mx.float32)).astype(x.dtype)
-        return self.weight * output
 
 
 class Attention(nn.Module):
@@ -160,6 +148,7 @@ class QwenModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, config: ModelArgs):
         super().__init__()
+        self.model_type = config.model_type
         self.transformer = QwenModel(config)
         self.lm_head = nn.Linear(
             config.hidden_size, config.vocab_size, bias=not config.no_bias

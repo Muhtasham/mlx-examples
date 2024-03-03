@@ -20,7 +20,9 @@ Some more useful examples are listed below.
 
 ### Image Models 
 
+- Image classification using [ResNets on CIFAR-10](cifar).
 - Generating images with [Stable Diffusion](stable_diffusion).
+- Convolutional variational autoencoder [(CVAE) on MNIST](cvae).
 
 ### Audio Models
 
@@ -29,6 +31,7 @@ Some more useful examples are listed below.
 ### Multimodal models
 
 - Joint text and image embeddings with [CLIP](clip).
+- Text generation from image and text inputs with [LLaVA](llava).
 
 ### Other Models 
 

@@ -6,10 +6,12 @@ import mlx.nn as nn
 import numpy as np
 
 from .base import BaseModelArgs
+from .layers import RMSNorm
 
 
 @dataclass
 class ModelArgs(BaseModelArgs):
+    model_type: str
     vocab_size: int = 32000
     max_position_embeddings: int = 4096 * 32
     hidden_size: int = 4096
@@ -20,29 +22,13 @@ class ModelArgs(BaseModelArgs):
     num_key_value_heads: int = 8
     num_local_experts: int = 8
     rms_norm_eps: float = 1e-5
-    vocab_size: int
     rope_theta: float = 1e6
     rope_traditional: bool = False
-    model_type: str = None
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dims: int, eps: float = 1e-5):
-        super().__init__()
-        self.weight = mx.ones((dims,))
-        self.eps = eps
-
-    def _norm(self, x):
-        return x * mx.rsqrt(x.square().mean(-1, keepdims=True) + self.eps)
-
-    def __call__(self, x):
-        output = self._norm(x.astype(mx.float32)).astype(x.dtype)
-        return self.weight * output
 
 
 class MixtralAttention(nn.Module):
@@ -95,12 +81,9 @@ class MixtralAttention(nn.Module):
             0, 2, 1, 3
         )
 
-        def repeat(a):
-            a = mx.concatenate([mx.expand_dims(a, 2)] * self.repeats, axis=2)
-            return a.reshape([B, self.num_heads, L, -1])
-
         if self.repeats > 1:
-            keys, values = map(repeat, (keys, values))
+            keys = mx.repeat(keys, self.repeats, axis=1)
+            values = mx.repeat(values, self.repeats, axis=1)
 
         if cache is not None:
             key_cache, value_cache = cache
@@ -252,6 +235,7 @@ class MixtralModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+        self.model_type = args.model_type
         self.model = MixtralModel(args)
         self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
 
@@ -262,3 +246,7 @@ class Model(nn.Module):
     ):
         out, cache = self.model(inputs, cache)
         return self.lm_head(out), cache
+
+    @property
+    def layers(self):
+        return self.model.layers

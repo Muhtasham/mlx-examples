@@ -6,10 +6,12 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .base import BaseModelArgs
+from .layers import LayerNorm
 
 
 @dataclass
 class ModelArgs(BaseModelArgs):
+    model_type: str
     max_position_embeddings: int = 2048
     vocab_size: int = 51200
     hidden_size: int = 2560
@@ -24,11 +26,6 @@ class ModelArgs(BaseModelArgs):
     def __post_init__(self):
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
-
-
-class LayerNorm(nn.LayerNorm):
-    def __call__(self, x: mx.array) -> mx.array:
-        return super().__call__(x.astype(mx.float32)).astype(x.dtype)
 
 
 class PhiAttention(nn.Module):
@@ -85,12 +82,9 @@ class PhiAttention(nn.Module):
             B, L, self.num_key_value_heads, self.head_dim
         ).transpose(0, 2, 1, 3)
 
-        def repeat(a):
-            a = mx.concatenate([mx.expand_dims(a, 2)] * self.repeats, axis=2)
-            return a.reshape([B, self.num_heads, L, -1])
-
         if self.repeats > 1:
-            keys, values = map(repeat, (keys, values))
+            keys = mx.repeat(keys, self.repeats, axis=1)
+            values = mx.repeat(values, self.repeats, axis=1)
 
         # Add RoPE to the queries and keys and combine them with the cache
         if cache is not None:
@@ -163,6 +157,7 @@ class PhiModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, config: ModelArgs):
         super().__init__()
+        self.model_type = config.model_type
         self.model = PhiModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=True)
 
@@ -179,3 +174,7 @@ class Model(nn.Module):
 
         y, cache = self.model(x, mask, cache)
         return self.lm_head(y), cache
+
+    @property
+    def layers(self):
+        return self.model.layers

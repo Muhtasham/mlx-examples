@@ -7,9 +7,10 @@ import mlx.optimizers as optim
 import numpy as np
 from mlx.utils import tree_flatten
 
-from .tuner.lora import LoRALinear
-from .tuner.trainer import TrainingArgs, evaluate, train
-from .utils import generate, load, LORA_SUPPORTED_MODELS
+from .tuner.trainer import TrainingArgs, TrainingCallback, evaluate, train
+from .tuner.utils import linear_to_lora_layers
+from .utils import load
+
 
 def build_parser():
     parser = argparse.ArgumentParser(description="LoRA or QLoRA finetuning.")
@@ -109,6 +110,12 @@ def build_parser():
         default=500,
         help="Number of test set batches, -1 uses the entire test set.",
     )
+    parser.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=2048,
+        help="Maximum sequence length.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="The PRNG seed")
     return parser
 
@@ -153,28 +160,16 @@ def load_dataset(args):
     return train, valid, test
 
 
-if __name__ == "__main__":
-    parser = build_parser()
-    args = parser.parse_args()
-
+def run(args, training_callback: TrainingCallback = None):
     np.random.seed(args.seed)
 
     print("Loading pretrained model")
     model, tokenizer = load(args.model)
 
-    if model.__class__ not in LORA_SUPPORTED_MODELS:
-        raise ValueError(
-            f"Model {model.__class__} not supported. "
-            f"Supported models: {LORA_SUPPORTED_MODELS}"
-        )
-
-    # Freeze all layers other than LORA linears
+    # Freeze all layers
     model.freeze()
-    for l in model.model.layers[len(model.model.layers) - args.lora_layers :]:
-        l.self_attn.q_proj = LoRALinear.from_linear(l.self_attn.q_proj)
-        l.self_attn.v_proj = LoRALinear.from_linear(l.self_attn.v_proj)
-        if hasattr(l, "block_sparse_moe"):
-            l.block_sparse_moe.gate = LoRALinear.from_linear(l.block_sparse_moe.gate)
+    # Convert linear layers to lora layers and unfreeze in the process
+    linear_to_lora_layers(model, args.lora_layers)
 
     p = sum(v.size for _, v in tree_flatten(model.parameters())) / 10**6
     print(f"Total parameters {p:.3f}M")
@@ -197,6 +192,7 @@ if __name__ == "__main__":
         steps_per_eval=args.steps_per_eval,
         steps_per_save=args.save_every,
         adapter_file=args.adapter_file,
+        max_seq_length=args.max_seq_length,
     )
     if args.train:
         print("Training")
@@ -210,6 +206,7 @@ if __name__ == "__main__":
             optimizer=opt,
             train_dataset=train_set,
             val_dataset=valid_set,
+            training_callback=training_callback,
         )
 
     # Load the LoRA adapter weights which we assume should exist by this point
@@ -237,13 +234,13 @@ if __name__ == "__main__":
         print(f"Test loss {test_loss:.3f}, Test ppl {test_ppl:.3f}.")
 
     if args.prompt is not None:
-        print("Generating")
-        model.eval()
-        generate(
-            model=model,
-            tokenizer=tokenizer,
-            temp=args.temp,
-            max_tokens=args.max_tokens,
-            prompt=args.prompt,
-            verbose=True,
+        raise NotImplementedError(
+            "Please use mlx_lm.generate with trained adapter for generation."
         )
+
+
+if __name__ == "__main__":
+    parser = build_parser()
+    args = parser.parse_args()
+
+    run(args)

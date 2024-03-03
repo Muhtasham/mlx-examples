@@ -8,6 +8,8 @@ LoRA (QLoRA).[^qlora] LoRA fine-tuning works with the following model families:
 - Llama
 - Phi2
 - Mixtral
+- Qwen2
+- OLMo
 
 ## Contents
 
@@ -68,6 +70,17 @@ python -m mlx_lm.lora \
     --adapter-file <path_to_adapters.npz> \
     --data <path_to_data> \
     --test
+```
+
+### Generate
+
+For generation use mlx_lm.generate:
+
+```shell
+python -m mlx_lm.generate \
+    --model <path_to_model> \
+    --adapter-file <path_to_adapters.npz> \
+    --prompt "<your_model_prompt>"
 ```
 
 ## Fuse and Upload
